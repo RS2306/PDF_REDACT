@@ -2,62 +2,1385 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <!-- Crucial for Android mobile scaling -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    
-    <title>My Android PWA</title>
-    
-    <!-- Link to the Android Manifest -->
-    <link rel="manifest" href="./manifest.json">
+    <!-- Meta tags for PWA injected dynamically via JS, but we'll include theme color here -->
     <meta name="theme-color" content="#4f46e5">
-
+    <title>Enterprise Document Redaction Tool</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    
     <style>
         body {
-            font-family: system-ui, -apple-system, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #f0f2f5;
-            color: #333;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f0f2f5;
         }
-        .card {
+
+        .canvas-container {
+            background: #e2e8f0;
+            display: flex;
+            justify-content: center;
+            min-height: 600px;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        #pdfCanvas {
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            cursor: crosshair;
             background: white;
-            padding: 2rem;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            text-align: center;
+            max-width: 100%;
+            height: auto !important; 
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #4f46e5;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        input[type="range"] {
+            accent-color: #4f46e5;
+        }
+        
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #c1c1c1; 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a8a8; 
         }
     </style>
 </head>
-<body>
+<body class="min-h-screen p-4 md:p-8">
 
-    <div class="card">
-        <h1>📱 Hello, Android!</h1>
-        <p>This is a single-file PWA.</p>
-        <p id="status">Checking connection...</p>
+    <div class="max-w-7xl mx-auto bg-white rounded-2xl shadow-xl overflow-hidden border border-gray-100 flex flex-col">
+        
+        <!-- Header -->
+        <div class="bg-gradient-to-r from-indigo-600 to-purple-700 p-6 md:p-8 text-white text-center flex-shrink-0 relative">
+            <h1 class="text-3xl md:text-4xl font-extrabold mb-2 tracking-tight">🔒 Enterprise Redaction Tool</h1>
+            <p class="text-indigo-100 text-lg">Scan, Review, and Securely Redact sensitive information</p>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="bg-gray-50 p-4 border-b border-gray-200 flex flex-wrap gap-3 justify-center items-center flex-shrink-0">
+            
+            <div class="relative">
+                <input type="file" id="docFile" class="hidden" accept=".pdf,.xlsx,.xls,.docx,.doc,.csv,.txt,.json">
+                <button id="uploadBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                    Upload Document
+                </button>
+            </div>
+
+            <!-- Scan Button for two-step workflow -->
+            <button id="scanBtn" disabled class="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2">
+                🔍 Scan Document
+            </button>
+
+            <!-- One-click Auto Redact Button -->
+            <button id="autoRedactBtn" disabled class="bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2" title="Automatically scans (with OCR for scanned pages) and redacts all known sensitive items in one click">
+                ⚡ Auto-Redact All
+            </button>
+
+            <label class="flex items-center gap-2 text-sm font-medium text-gray-600 bg-gray-100 px-3 py-2 rounded-lg cursor-pointer select-none" title="When on, scanned/photocopied PDF pages with no text layer are run through OCR to find sensitive text. Turn off for a much faster scan if your document has no scanned pages.">
+                <input type="checkbox" id="ocrToggle" checked class="w-4 h-4 text-indigo-600 rounded">
+                OCR scanned pages
+            </label>
+
+            <div class="h-8 w-px bg-gray-300 mx-2"></div>
+
+            <button id="undoBtn" disabled class="bg-gray-200 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed text-gray-800 font-semibold py-2 px-4 rounded-lg transition-all">
+                ↩️ Undo Manual
+            </button>
+            
+            <button id="clearBtn" disabled class="bg-red-100 hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed text-red-700 font-semibold py-2 px-4 rounded-lg transition-all">
+                🗑️ Clear All
+            </button>
+
+            <button id="downloadBtn" disabled class="bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2 ml-auto">
+                💾 Download Clean File
+            </button>
+            
+            <!-- PWA Install Button (Hidden by default, shown when install is available) -->
+            <button id="installPwaBtn" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg shadow-sm transition-all flex items-center gap-2 ml-2">
+                📱 Install App
+            </button>
+        </div>
+
+        <!-- PDF Manual Controls -->
+        <div id="pdfControls" class="bg-white p-3 border-b border-gray-200 flex flex-wrap gap-6 justify-center items-center opacity-50 pointer-events-none transition-opacity flex-shrink-0">
+            <div class="flex items-center gap-2">
+                <label class="text-sm font-semibold text-gray-700">Manual Brush:</label>
+                <input type="range" id="brushSize" min="5" max="50" value="20" class="w-24">
+                <span id="brushValue" class="text-sm text-gray-500 font-mono w-10">20px</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <label class="text-sm font-semibold text-gray-700">Block Color:</label>
+                <input type="color" id="colorPicker" value="#000000" class="w-10 h-8 rounded cursor-pointer border-0 p-0">
+            </div>
+            
+            <div class="flex items-center gap-3 bg-gray-100 px-3 py-1.5 rounded-lg ml-auto">
+                <button id="prevPage" class="p-1 rounded hover:bg-gray-200 disabled:opacity-30">◀</button>
+                <span id="pageInfo" class="text-sm font-semibold text-gray-700 min-w-[80px] text-center">Page 1/1</span>
+                <button id="nextPage" class="p-1 rounded hover:bg-gray-200 disabled:opacity-30">▶</button>
+            </div>
+        </div>
+
+        <div id="statusAlert" class="bg-blue-50 text-blue-800 p-3 text-center font-medium text-sm border-b border-blue-100 hidden flex-shrink-0"></div>
+
+        <div id="loading" class="hidden absolute inset-0 bg-white/80 z-50 flex flex-col items-center justify-center backdrop-blur-sm rounded-2xl">
+            <div class="spinner mb-4"></div>
+            <p id="loadingText" class="text-lg font-semibold text-gray-700">Processing Document...</p>
+        </div>
+
+        <!-- Main Content Split Area -->
+        <div class="flex flex-col md:flex-row flex-grow relative overflow-hidden h-[700px]">
+            
+            <!-- Canvas Area (Left) -->
+            <div class="canvas-container p-4 md:p-6 flex-grow overflow-auto w-full md:w-3/4 bg-gray-100">
+                <div id="emptyState" class="absolute inset-0 flex flex-col items-center justify-center text-gray-400 z-10 pointer-events-none">
+                    <svg class="w-24 h-24 mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <p class="text-lg">Upload a document to begin redaction</p>
+                    <p class="text-sm mt-2">Supports PDF (incl. scanned/OCR), Excel, Word, CSV, JSON, TXT</p>
+                    <p class="text-xs mt-1 text-gray-400">Use "🔍 Scan Document" to review matches first, or "⚡ Auto-Redact All" for one-click redaction.</p>
+                </div>
+                <canvas id="pdfCanvas" class="hidden rounded-lg"></canvas>
+            </div>
+
+            <!-- Redaction Results Sidebar (Right) -->
+            <div class="w-full md:w-1/4 bg-white border-l border-gray-200 flex flex-col h-full z-20 shadow-[-5px_0_15px_rgba(0,0,0,0.05)]">
+                <div class="bg-gray-50 p-4 border-b border-gray-200 flex items-center gap-2">
+                    <span class="text-xl">📋</span>
+                    <h3 class="font-bold text-gray-800 text-sm uppercase tracking-wide">Review & Apply</h3>
+                    <span id="badgeCount" class="ml-auto bg-indigo-100 text-indigo-800 text-xs font-bold px-2 py-1 rounded-full">0</span>
+                </div>
+                
+                <div class="p-4 overflow-y-auto flex-grow bg-gray-50/50" id="sidebarList">
+                    <div id="emptySidebar" class="text-center text-gray-400 text-sm mt-10">
+                        <svg class="w-12 h-12 mx-auto mb-2 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                        Click "Scan Document" to find sensitive data.
+                    </div>
+                    <ul id="detectedItemsContainer" class="space-y-2 hidden"></ul>
+                </div>
+
+                <!-- Apply Actions -->
+                <div id="applyContainer" class="p-4 border-t border-gray-200 bg-white hidden flex-shrink-0">
+                    <p class="text-xs text-gray-500 mb-3 text-center">Uncheck items you want to keep visible.</p>
+                    <button id="applyAutoBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center gap-2">
+                        ✅ Apply Selected Redactions
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
-        // Check if the browser supports Service Workers
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js')
-                    .then(reg => console.log('Service Worker Registered!', reg.scope))
-                    .catch(err => console.error('Service Worker Failed:', err));
+        // --- PWA INITIALIZATION LOGIC ---
+        // Generates the manifest and Service Worker dynamically via Blob URLs
+        // to maintain a strict single-file constraint while offering PWA features.
+        const PWA_ICON_DATA = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cmVjdCB3aWR0aD0iNTEyIiBoZWlnaHQ9IjUxMiIgcng9IjExMiIgZmlsbD0iIzRmNDZlNSIvPjxwYXRoIGQ9Ik0zMzYgMjA4di0zMmE4MCA4MCAwIDAgMC0xNjAgMHYzMkgxNDR2MTkyaDIyNFYyMDh6TTI3MiAzMjBoLTMydi00OGgzMnoiIGZpbGw9IiNmZmYiLz48L3N2Zz4=';
+        
+        function initPWA() {
+            // 1. Generate Web App Manifest
+            const manifest = {
+                name: "Enterprise Document Redactor",
+                short_name: "RedactTool",
+                description: "Securely scan, review, and redact sensitive information locally.",
+                start_url: window.location.href.split('#')[0].split('?')[0], // Root URL
+                display: "standalone",
+                background_color: "#f0f2f5",
+                theme_color: "#4f46e5",
+                icons: [
+                    { src: PWA_ICON_DATA, sizes: "192x192", type: "image/svg+xml", purpose: "any maskable" },
+                    { src: PWA_ICON_DATA, sizes: "512x512", type: "image/svg+xml", purpose: "any maskable" }
+                ]
+            };
+            const manifestBlob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+            const manifestUrl = URL.createObjectURL(manifestBlob);
+            
+            const linkManifest = document.createElement('link');
+            linkManifest.rel = 'manifest';
+            linkManifest.href = manifestUrl;
+            document.head.appendChild(linkManifest);
+
+            // 2. Add Apple Touch Icon
+            const appleIcon = document.createElement('link');
+            appleIcon.rel = 'apple-touch-icon';
+            appleIcon.href = PWA_ICON_DATA;
+            document.head.appendChild(appleIcon);
+
+            // 3. Generate Service Worker script dynamically
+            const swCode = `
+                const CACHE_NAME = 'redact-pwa-v1';
+                const APP_SHELL = [
+                    location.origin + location.pathname,
+                    'https://cdn.tailwindcss.com',
+                    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
+                    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
+                    'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js',
+                    'https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js',
+                    'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+                    'https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js'
+                ];
+
+                self.addEventListener('install', event => {
+                    event.waitUntil(
+                        caches.open(CACHE_NAME).then(cache => {
+                            // Fetch all static assets gracefully
+                            return Promise.allSettled(APP_SHELL.map(url => {
+                                return fetch(new Request(url, {mode: 'cors', credentials: 'omit'}))
+                                    .then(response => {
+                                        if (response.ok) {
+                                            return cache.put(url, response);
+                                        }
+                                    });
+                            }));
+                        })
+                    );
+                    self.skipWaiting();
+                });
+
+                self.addEventListener('activate', event => {
+                    event.waitUntil(
+                        caches.keys().then(keys => Promise.all(
+                            keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))
+                        ))
+                    );
+                    self.clients.claim();
+                });
+
+                self.addEventListener('fetch', event => {
+                    if (event.request.method !== 'GET') return;
+                    
+                    event.respondWith(
+                        caches.match(event.request).then(cached => {
+                            return cached || fetch(event.request).then(response => {
+                                // Clone the response and cache it
+                                const resClone = response.clone();
+                                caches.open(CACHE_NAME).then(cache => {
+                                    if (event.request.url.startsWith('http')) {
+                                        cache.put(event.request, resClone);
+                                    }
+                                });
+                                return response;
+                            }).catch(() => {
+                                // Offline fallback for navigation requests
+                                if (event.request.mode === 'navigate') {
+                                    return caches.match(location.origin + location.pathname);
+                                }
+                            });
+                        })
+                    );
+                });
+            `;
+            
+            // Registering Service Worker via Blob is supported in many browsers for dynamically generated files
+            if ('serviceWorker' in navigator) {
+                try {
+                    const swBlob = new Blob([swCode], { type: 'application/javascript' });
+                    const swUrl = URL.createObjectURL(swBlob);
+                    
+                    navigator.serviceWorker.register(swUrl).then(reg => {
+                        console.log('Single-file PWA Service Worker registered.');
+                    }).catch(err => {
+                        console.warn('PWA Blob registration blocked (some environments restrict Blob SWs). Fallback to standard web mode.', err);
+                    });
+                } catch (e) {
+                    console.warn('Error constructing SW Blob.', e);
+                }
+            }
+
+            // 4. Handle 'Add to Homescreen' prompt
+            let deferredPrompt;
+            const installBtn = document.getElementById('installPwaBtn');
+            
+            window.addEventListener('beforeinstallprompt', (e) => {
+                // Prevent the mini-infobar from appearing on mobile
+                e.preventDefault();
+                // Stash the event so it can be triggered later.
+                deferredPrompt = e;
+                // Update UI notify the user they can install the PWA
+                installBtn.classList.remove('hidden');
+            });
+
+            installBtn.addEventListener('click', async () => {
+                if (deferredPrompt) {
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    console.log(`User response to install prompt: ${outcome}`);
+                    deferredPrompt = null;
+                    installBtn.classList.add('hidden');
+                }
+            });
+            
+            window.addEventListener('appinstalled', () => {
+                console.log('PWA was successfully installed.');
+                installBtn.classList.add('hidden');
             });
         }
 
-        // Simple online/offline indicator
-        const statusEl = document.getElementById('status');
-        const updateStatus = () => {
-            statusEl.textContent = navigator.onLine ? "🟢 You are online" : "🔴 You are offline";
-        };
-        window.addEventListener('online', updateStatus);
-        window.addEventListener('offline', updateStatus);
-        updateStatus();
+        // --- REGULAR APPLICATION LOGIC ---
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+        // --- SENSITIVE DATA CONFIGURATION ---
+        const EXACT_MATCH_STRINGS = [
+            "Balmer Lawrie & Co Ltd",
+            "Balmer Lawrie & Company Limited",
+            "BALMER LAWRIE AND COMPANY LIMITED",
+            "AABCB0984E",
+            "19AABCB0984E1ZS",
+            "21 NS ROAD, KOLKATA 700001, WEST BENGAL",
+            "21 Netaji Subhas Road, BBD Bag, Kolkata 700001, West Bengal",
+            "21 NETAJI SUBHAS ROAD KOLKATA Kolkata West Bengal 700001",
+            "21 Netaji Subash Road Kolkata 700001 West Bengal",
+            "21, NETAJI SUBHAS ROAD, KOLKATA, Kolkata, West Bengal, 700001",
+            "Adhip Nath Pal Chowdhury",
+            "Raja Saha",
+            "Ankit Kanodia",
+            "Megha Agarwal",
+            "DIPAK GHOSH",
+            "PROJJWAL GHORAI",
+            "9477749997",
+            "21 Balmer Lawrie House",
+            "Balmer Lawrie House",
+            "Bank Account Number",
+            "A/C Number",
+            "Balmer Lawrie Investment Limited",
+            "AACCB2843H",
+            "CIN : L15492WB1924GOI004835",
+            "L15492WB1924GOI004835",
+            "CIN : L65999WB2001GOI093759",
+            "L65999WB2001GOI093759",
+            "Phone : (91) (033) 2222 5218/5650",
+            "A Government of India Undertaking",
+            "A Government of India Enterprise",
+            "A Ministry of Petroleum & Natural Gas",
+            "Miniratna"
+        ];
+
+        // 1. Flexible Punctuation Logic:
+        const escapedMatches = EXACT_MATCH_STRINGS.map(s => {
+            let words = s.split(/[\s,.:;()\/&+-]+/);
+            words = words.filter(w => w.length > 0);
+            return words.join('[\\s\\W_]+'); 
+        });
+        
+        escapedMatches.push('CIN[\\s\\W_]+L15492WB1924G[O0][I1L]004835');
+        escapedMatches.push('L15492WB1924G[O0][I1L]004835');
+        escapedMatches.push('CIN[\\s\\W_]+L65999WB2001G[O0][I1L]093759');
+        escapedMatches.push('L65999WB2001G[O0][I1L]093759');
+
+        const customAddressRegex = `\\b21[\\s\\W_]+(?:Netaji[\\s\\W_]+Subh?ash?[\\s\\W_]+|N[\\s\\W_]*S[\\s\\W_]+)?Road[\\s\\S]{5,150}?(?:700[\\s\\W_]*001|West[\\s\\W_]*Bengal|INDIA)\\b`;
+
+        const letterHeadRegex1 = /बामर लॉरी एण्ड कं\. लिमिटेड/gi;
+        const letterHeadRegex2 = /\(भारत सरकार का एक उद्यम\)/gi;
+        const letterHeadRegex3 = /Balmer Lawrie & Co\. Ltd\./gi;
+        const letterHeadRegex4 = /\(A Government of India Enterprise\)/gi;
+        const letterHeadRegex5 = /SINCE 1867/gi;
+        const letterHeadRegex6 = /TAXATION DEPARTMENT/gi;
+        const letterHeadRegex7 = /21, नेताजी सुभाष रोड, कोलकाता-700001 \(भारत\)/gi;
+        const letterHeadRegex8 = /फोन : \(91\) \(033\) 2222 5218\/5650/gi;
+        const letterHeadRegex9 = /21, Netaji Subhas Road, Kolkata - 700 001 \(INDIA\)/gi;
+        const letterHeadRegex10 = /Phone: \(91\) \(033\) 2222 5218\/5650/gi;
+        const letterHeadRegex11 = /CIN : L15492WB1924GOI004835/gi;
+        
+        const footerRegex1 = /पंजीकृत कार्यालय : 21, नेताजी सुभाष रोड, कोलकाता-700001 \(भारत\), Registered Office: 21 Netaji Subhas Road, Kolkata - 700001 \(INDIA\), Website: www\.balmerlawrie\.com/gi;
+        const footerRegex2 = /Industrial Packaging Greases & Lubricants Chemicals Travel & Vacations Logistics \(Services, Infrastructure, Chain\) Refinery & Oil Field Services/gi;
+        const footerRegex3 = /LTO\.100001-01/gi;
+
+        const genericGSTIN = `\\b\\d{2}[A-Z]{5}\\d{4}[A-Z][A-Z0-9]{3}\\b`;
+        const genericMobile = `\\b(?:\\+?91|0)?[\\s,.-]{0,3}[6-9]\\d{2}[\\s,.-]{0,3}\\d{3}[\\s,.-]{0,3}\\d{4}\\b`;
+        const genericEmail = `\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b`;
+
+        const REDACT_REGEX_SOURCE = 
+            `(${escapedMatches.join('|')})|` + 
+            `(${customAddressRegex})|` + 
+            `(${genericGSTIN})|` + 
+            `(${genericEmail})|` + 
+            `(${genericMobile})`;
+
+        const REDACT_REPLACEMENT_TEXT = "[REDACTED]";
+
+        class DocumentRedactor {
+            constructor() {
+                this.canvas = document.getElementById('pdfCanvas');
+                this.ctx = this.canvas.getContext('2d');
+                
+                this.currentFileType = null;
+                this.currentFile = null;
+                
+                this.pdfDoc = null;
+                this.currentPage = 1;
+                this.totalPages = 0;
+                this.pdfScale = 1.5;
+                
+                this.isDrawing = false;
+                this.currentPath = [];
+                
+                this.redactions = []; 
+                this.foundMatches = new Map(); 
+
+                this.ocrWorker = null;
+                this.ocrWorkerLoading = null;
+                this.ocrEnabled = true;
+
+                this.bindEvents();
+            }
+
+            bindEvents() {
+                document.getElementById('uploadBtn').addEventListener('click', () => document.getElementById('docFile').click());
+                document.getElementById('docFile').addEventListener('change', (e) => this.handleFileUpload(e.target.files[0]));
+                
+                document.getElementById('scanBtn').addEventListener('click', () => this.scanDocument());
+                document.getElementById('autoRedactBtn').addEventListener('click', () => this.autoRedactAll());
+                document.getElementById('applyAutoBtn').addEventListener('click', () => this.applyReviewedRedactions());
+                document.getElementById('ocrToggle').addEventListener('change', (e) => {
+                    this.ocrEnabled = e.target.checked;
+                });
+
+                document.getElementById('clearBtn').addEventListener('click', () => this.clearRedactions());
+                document.getElementById('undoBtn').addEventListener('click', () => this.undoRedaction());
+                document.getElementById('downloadBtn').addEventListener('click', () => this.downloadDocument());
+
+                document.getElementById('brushSize').addEventListener('input', (e) => {
+                    document.getElementById('brushValue').textContent = e.target.value + 'px';
+                });
+                document.getElementById('prevPage').addEventListener('click', () => this.changePage(-1));
+                document.getElementById('nextPage').addEventListener('click', () => this.changePage(1));
+
+                this.canvas.addEventListener('mousedown', this.startDrawing.bind(this));
+                this.canvas.addEventListener('mousemove', this.draw.bind(this));
+                this.canvas.addEventListener('mouseup', this.stopDrawing.bind(this));
+                this.canvas.addEventListener('mouseout', this.stopDrawing.bind(this));
+                
+                // Touch events for drawing on tablets/mobile
+                this.canvas.addEventListener('touchstart', (e) => {
+                    e.preventDefault();
+                    this.startDrawing(e.touches[0]);
+                }, {passive: false});
+                this.canvas.addEventListener('touchmove', (e) => {
+                    e.preventDefault();
+                    this.draw(e.touches[0]);
+                }, {passive: false});
+                this.canvas.addEventListener('touchend', (e) => {
+                    e.preventDefault();
+                    this.stopDrawing();
+                });
+            }
+
+            async handleFileUpload(file) {
+                if (!file) return;
+                
+                this.currentFile = file;
+                const fileName = file.name.toLowerCase();
+                this.clearSidebar();
+                this.processedBlob = null; 
+                
+                document.getElementById('emptyState').classList.add('hidden');
+                
+                if (fileName.endsWith('.pdf')) {
+                    this.currentFileType = 'pdf';
+                    this.canvas.classList.remove('hidden');
+                    document.getElementById('pdfControls').classList.remove('opacity-50', 'pointer-events-none');
+                    document.getElementById('downloadBtn').innerHTML = "💾 Download Clean PDF";
+                    await this.loadPDF(file);
+                } else {
+                    this.currentFileType = 'other';
+                    this.canvas.classList.add('hidden');
+                    document.getElementById('pdfControls').classList.add('opacity-50', 'pointer-events-none');
+                    document.getElementById('emptyState').classList.remove('hidden');
+                    document.getElementById('emptyState').innerHTML = `
+                        <div class="text-center p-8 bg-white shadow-sm rounded-xl border border-gray-200 z-10 pointer-events-auto w-[90%] md:w-auto">
+                            <span class="text-5xl block mb-4">📄</span>
+                            <h3 class="text-xl font-bold text-gray-800 break-words">${file.name}</h3>
+                            <p class="text-gray-600 mt-2">Ready for text analysis.</p>
+                            <p class="text-sm font-semibold text-amber-600 mt-4 bg-amber-50 py-2 px-4 rounded-lg">Click '🔍 Scan Document' to review matches, or '⚡ Auto-Redact All' for one click.</p>
+                        </div>
+                    `;
+                    
+                    this.enableButtons(true, false);
+                    this.setStatus(`Loaded ${file.name}. Ready to scan.`);
+                }
+            }
+
+            async loadPDF(file) {
+                this.showLoading('Parsing PDF Document...', true);
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    this.pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                    this.totalPages = this.pdfDoc.numPages;
+                    this.currentPage = 1;
+                    
+                    this.redactions = Array.from({ length: this.totalPages }, () => []);
+                    
+                    await this.renderPage(this.currentPage);
+                    this.enableButtons(true, true);
+                    this.setStatus(`PDF loaded successfully. ${this.totalPages} page(s).`);
+                } catch (error) {
+                    this.setStatus('Error loading PDF: ' + error.message, true);
+                } finally {
+                    this.showLoading('', false);
+                }
+            }
+
+            async renderPage(pageNum) {
+                const page = await this.pdfDoc.getPage(pageNum);
+                
+                // Adjust scale responsively based on container
+                const containerWidth = this.canvas.parentElement.clientWidth - 30; // padding
+                const defaultViewport = page.getViewport({ scale: 1 });
+                let scale = this.pdfScale;
+                
+                if (containerWidth < defaultViewport.width * scale) {
+                    scale = containerWidth / defaultViewport.width;
+                }
+
+                const viewport = page.getViewport({ scale: scale });
+                
+                this.canvas.height = viewport.height;
+                this.canvas.width = viewport.width;
+                
+                this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+                
+                await page.render({
+                    canvasContext: this.ctx,
+                    viewport: viewport
+                }).promise;
+                
+                const currentRedactions = this.redactions[pageNum - 1] || [];
+                // Re-adjust redactions drawing based on scale ratio difference
+                const drawScale = scale / this.pdfScale;
+
+                currentRedactions.forEach(action => {
+                    if (action.type === 'path') this.drawPath(action.data, action.color, action.size, drawScale);
+                    else if (action.type === 'rect') this.drawRect(action.data, action.color, drawScale);
+                });
+
+                document.getElementById('pageInfo').textContent = `Page ${pageNum}/${this.totalPages}`;
+                document.getElementById('prevPage').disabled = pageNum <= 1;
+                document.getElementById('nextPage').disabled = pageNum >= this.totalPages;
+                this.updateUndoState();
+            }
+
+            changePage(delta) {
+                const newPage = this.currentPage + delta;
+                if (newPage >= 1 && newPage <= this.totalPages) {
+                    this.currentPage = newPage;
+                    this.renderPage(this.currentPage);
+                }
+            }
+
+            startDrawing(e) {
+                if (this.currentFileType !== 'pdf') return;
+                this.isDrawing = true;
+                const rect = this.canvas.getBoundingClientRect();
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+                
+                this.currentPath = [{x, y}];
+            }
+
+            draw(e) {
+                if (!this.isDrawing) return;
+                const rect = this.canvas.getBoundingClientRect();
+                const scaleX = this.canvas.width / rect.width;
+                const scaleY = this.canvas.height / rect.height;
+                
+                const x = (e.clientX - rect.left) * scaleX;
+                const y = (e.clientY - rect.top) * scaleY;
+                
+                this.currentPath.push({x, y});
+                
+                const color = document.getElementById('colorPicker').value;
+                const size = parseInt(document.getElementById('brushSize').value);
+                
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = size;
+                
+                this.ctx.beginPath();
+                const prev = this.currentPath[this.currentPath.length - 2];
+                this.ctx.moveTo(prev.x, prev.y);
+                this.ctx.lineTo(x, y);
+                this.ctx.stroke();
+            }
+
+            stopDrawing() {
+                if (this.isDrawing && this.currentPath.length > 1) {
+                    const color = document.getElementById('colorPicker').value;
+                    const size = parseInt(document.getElementById('brushSize').value);
+                    
+                    // Convert points back to base standard scale (this.pdfScale) so resizing window doesn't distort them
+                    const containerWidth = this.canvas.parentElement.clientWidth - 30;
+                    const defaultViewportWidth = this.canvas.width / (this.canvas.height/this.canvas.width); // rough est
+                    let currentScale = this.pdfScale;
+                    
+                    // We normalize path data to `this.pdfScale` (1.5) so it's consistent.
+                    const ratio = this.pdfScale / (this.canvas.width / this.canvas.clientWidth); 
+
+                    this.redactions[this.currentPage - 1].push({
+                        type: 'path',
+                        data: [...this.currentPath], // we store raw canvas coords, so redrawing will adjust
+                        color: color,
+                        size: size
+                    });
+                    this.updateUndoState();
+                }
+                this.isDrawing = false;
+                this.currentPath = [];
+            }
+
+            drawPath(path, color, size, scale = 1) {
+                if (path.length < 2) return;
+                this.ctx.lineCap = 'round';
+                this.ctx.lineJoin = 'round';
+                this.ctx.strokeStyle = color;
+                this.ctx.lineWidth = size * scale;
+                
+                this.ctx.beginPath();
+                this.ctx.moveTo(path[0].x * scale, path[0].y * scale);
+                for (let i = 1; i < path.length; i++) {
+                    this.ctx.lineTo(path[i].x * scale, path[i].y * scale);
+                }
+                this.ctx.stroke();
+            }
+
+            drawRect(rectData, color, scale = 1) {
+                this.ctx.fillStyle = color;
+                this.ctx.fillRect(rectData.x * scale, rectData.y * scale, rectData.w * scale, rectData.h * scale);
+            }
+
+            async scanDocument() {
+                if (!this.currentFile) return;
+                this.clearSidebar();
+                this.foundMatches.clear();
+                
+                this.showLoading('Scanning for sensitive data...', true);
+                
+                try {
+                    if (this.currentFileType === 'pdf') {
+                        await this.scanPDF();
+                    } else if (this.currentFileType === 'other') {
+                        await this.scanNonPDF();
+                    }
+                    this.renderSidebarItems();
+                    
+                    if (this.foundMatches.size === 0) {
+                        this.setStatus(`Scan complete. No sensitive data found.`);
+                    } else {
+                        this.setStatus(`Scan complete. Found ${this.foundMatches.size} unique types of sensitive data. Please review in the sidebar.`);
+                    }
+                } catch (error) {
+                    this.setStatus('Error during scan: ' + error.message, true);
+                    console.error(error);
+                } finally {
+                    this.showLoading('', false);
+                }
+            }
+
+            async scanPDF() {
+                const masterRegex = new RegExp(REDACT_REGEX_SOURCE, 'gi');
+                const headerFooterPatterns = [
+                    letterHeadRegex1, letterHeadRegex2, letterHeadRegex3, letterHeadRegex4, letterHeadRegex5, 
+                    letterHeadRegex6, letterHeadRegex7, letterHeadRegex8, letterHeadRegex9, letterHeadRegex10, letterHeadRegex11,
+                    footerRegex1, footerRegex2, footerRegex3
+                ];
+
+                for (let pageNum = 1; pageNum <= this.totalPages; pageNum++) {
+                    const page = await this.pdfDoc.getPage(pageNum);
+                    const viewport = page.getViewport({ scale: this.pdfScale });
+                    const textContent = await page.getTextContent();
+                    
+                    let fullPageString = "";
+                    let itemMappings = [];
+
+                    for (let i = 0; i < textContent.items.length; i++) {
+                        const item = textContent.items[i];
+                        if (item.str.trim() === '') continue; 
+                        
+                        const startIndex = fullPageString.length;
+                        fullPageString += item.str + " "; 
+                        const endIndex = fullPageString.length;
+
+                        itemMappings.push({
+                            item: item,
+                            startIdx: startIndex,
+                            endIdx: endIndex - 1 
+                        });
+                    }
+
+                    let match;
+                    masterRegex.lastIndex = 0; 
+                    
+                    while ((match = masterRegex.exec(fullPageString)) !== null) {
+                        this.processMatch(match, fullPageString, itemMappings, viewport, pageNum);
+                    }
+                    
+                    headerFooterPatterns.forEach(pattern => {
+                         pattern.lastIndex = 0;
+                         while ((match = pattern.exec(fullPageString)) !== null) {
+                            this.processMatch(match, fullPageString, itemMappings, viewport, pageNum);
+                        }
+                    });
+
+                    const meaningfulTextLength = fullPageString.replace(/\s/g, '').length;
+                    const pageLooksScanned = meaningfulTextLength < 40;
+
+                    if (this.ocrEnabled) {
+                        try {
+                            await this.withTimeout(
+                                this.ocrCheckPage(pageNum, masterRegex, headerFooterPatterns, pageLooksScanned),
+                                90000,
+                                `OCR timed out on page ${pageNum}`
+                            );
+                        } catch (ocrError) {
+                            console.error(`OCR failed on page ${pageNum}:`, ocrError);
+                            this.setStatus(`OCR could not fully process page ${pageNum} (${ocrError.message || ocrError}). You can still redact it manually with the brush tool.`, true);
+                        }
+                        this.showLoading('Scanning for sensitive data...', true);
+                    } else if (pageLooksScanned) {
+                        this.setStatus(`Page ${pageNum} looks scanned but OCR is turned off — enable "OCR scanned pages" to auto-detect text on it.`, true);
+                    }
+                }
+            }
+
+            withTimeout(promise, ms, timeoutMessage) {
+                let timer;
+                const timeout = new Promise((_, reject) => {
+                    timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
+                });
+                return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+            }
+
+            async getOcrWorker() {
+                if (this.ocrWorker) return this.ocrWorker;
+                if (this.ocrWorkerLoading) return this.ocrWorkerLoading;
+
+                this.ocrWorkerLoading = (async () => {
+                    this.showLoading('Loading OCR engine (first time only, ~10-20s)...', true);
+                    const worker = await Tesseract.createWorker('eng', 1, { logger: () => {} });
+                    this.ocrWorker = worker;
+                    return worker;
+                })();
+
+                return this.ocrWorkerLoading;
+            }
+
+            async ocrCheckPage(pageNum, masterRegex, headerFooterPatterns, doFullPage) {
+                const page = await this.pdfDoc.getPage(pageNum);
+                const baseViewport = page.getViewport({ scale: 1 });
+
+                const targetWidth = 2200;
+                let ocrScale = targetWidth / baseViewport.width;
+                ocrScale = Math.max(1.5, Math.min(ocrScale, 3));
+
+                const ocrViewport = page.getViewport({ scale: ocrScale });
+                const offCanvas = document.createElement('canvas');
+                offCanvas.width = ocrViewport.width;
+                offCanvas.height = ocrViewport.height;
+                const offCtx = offCanvas.getContext('2d');
+
+                await page.render({ canvasContext: offCtx, viewport: ocrViewport }).promise;
+                this.preprocessCanvasForOcr(offCanvas);
+
+                const worker = await this.getOcrWorker();
+                const scaleRatio = this.pdfScale / ocrScale;
+
+                if (doFullPage) {
+                    this.showLoading(`Page ${pageNum}/${this.totalPages}: recognizing text (OCR)...`, true);
+                    await worker.setParameters({ tessedit_pageseg_mode: '3' }); 
+                    const { data } = await worker.recognize(offCanvas);
+                    this.matchOcrWords(data.words, 1, 0, 0, scaleRatio, masterRegex, headerFooterPatterns, pageNum);
+                }
+
+                this.showLoading(`Page ${pageNum}/${this.totalPages}: checking letterhead area closely...`, true);
+                await this.ocrCropAndMatch(
+                    offCanvas, worker,
+                    0, 0, offCanvas.width, Math.round(offCanvas.height * 0.20),
+                    scaleRatio, masterRegex, headerFooterPatterns, pageNum
+                );
+
+                this.showLoading(`Page ${pageNum}/${this.totalPages}: checking footer area closely...`, true);
+                const footerStartY = Math.round(offCanvas.height * 0.85);
+                await this.ocrCropAndMatch(
+                    offCanvas, worker,
+                    0, footerStartY, offCanvas.width, offCanvas.height - footerStartY,
+                    scaleRatio, masterRegex, headerFooterPatterns, pageNum
+                );
+
+                await worker.setParameters({ tessedit_pageseg_mode: '3' });
+            }
+
+            async ocrCropAndMatch(sourceCanvas, worker, cropX, cropY, cropW, cropH, scaleRatio, masterRegex, headerFooterPatterns, pageNum) {
+                if (cropW <= 0 || cropH <= 0) return;
+
+                const upscale = 3;
+                const cropCanvas = document.createElement('canvas');
+                cropCanvas.width = Math.round(cropW * upscale);
+                cropCanvas.height = Math.round(cropH * upscale);
+                const cropCtx = cropCanvas.getContext('2d');
+                cropCtx.imageSmoothingEnabled = true;
+                cropCtx.drawImage(
+                    sourceCanvas,
+                    cropX, cropY, cropW, cropH,
+                    0, 0, cropCanvas.width, cropCanvas.height
+                );
+
+                try {
+                    await worker.setParameters({ tessedit_pageseg_mode: '6' });
+                    const { data } = await worker.recognize(cropCanvas);
+                    const words = (data && data.words) ? data.words : [];
+                    this.matchOcrWords(words, upscale, cropX, cropY, scaleRatio, masterRegex, headerFooterPatterns, pageNum);
+                } catch (e) {
+                    console.error('Crop OCR pass failed:', e);
+                }
+            }
+
+            preprocessCanvasForOcr(canvas) {
+                const ctx = canvas.getContext('2d');
+                const w = canvas.width, h = canvas.height;
+                if (w === 0 || h === 0) return;
+                const imageData = ctx.getImageData(0, 0, w, h);
+                const d = imageData.data;
+                const contrast = 1.35;
+                for (let i = 0; i < d.length; i += 4) {
+                    const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+                    let v = (gray - 128) * contrast + 128;
+                    v = v < 0 ? 0 : (v > 255 ? 255 : v);
+                    d[i] = d[i + 1] = d[i + 2] = v;
+                }
+                ctx.putImageData(imageData, 0, 0);
+            }
+
+            matchOcrWords(words, upscale, offsetX, offsetY, scaleRatio, masterRegex, headerFooterPatterns, pageNum) {
+                let fullOcrString = "";
+                let wordMappings = [];
+                (words || []).forEach(w => {
+                    if (!w.text || !w.text.trim()) return;
+                    const startIdx = fullOcrString.length;
+                    fullOcrString += w.text + " ";
+                    const endIdx = fullOcrString.length - 1;
+                    const bbox = {
+                        x0: offsetX + (w.bbox.x0 / upscale),
+                        y0: offsetY + (w.bbox.y0 / upscale),
+                        x1: offsetX + (w.bbox.x1 / upscale),
+                        y1: offsetY + (w.bbox.y1 / upscale)
+                    };
+                    wordMappings.push({ bbox, startIdx, endIdx });
+                });
+
+                if (!fullOcrString.trim()) return;
+
+                let match;
+                masterRegex.lastIndex = 0;
+                while ((match = masterRegex.exec(fullOcrString)) !== null) {
+                    this.processOcrMatch(match, wordMappings, scaleRatio, pageNum);
+                }
+
+                headerFooterPatterns.forEach(pattern => {
+                    pattern.lastIndex = 0;
+                    while ((match = pattern.exec(fullOcrString)) !== null) {
+                        this.processOcrMatch(match, wordMappings, scaleRatio, pageNum);
+                    }
+                });
+            }
+
+            processOcrMatch(match, wordMappings, scaleRatio, pageNum) {
+                const matchText = match[0].trim();
+                if (!matchText) return;
+
+                const normalizedKey = matchText.replace(/\s+/g, ' ').trim();
+                const matchStart = match.index;
+                const matchEnd = match.index + matchText.length;
+
+                const overlappingWords = wordMappings.filter(w =>
+                    (w.endIdx > matchStart && w.startIdx < matchEnd)
+                );
+
+                let rectsForThisMatch = [];
+                for (const w of overlappingWords) {
+                    const b = w.bbox;
+                    rectsForThisMatch.push({
+                        pageNum: pageNum,
+                        rect: {
+                            x: (b.x0 * scaleRatio) - 2,
+                            y: (b.y0 * scaleRatio) - 2,
+                            w: ((b.x1 - b.x0) * scaleRatio) + 4,
+                            h: ((b.y1 - b.y0) * scaleRatio) + 4
+                        }
+                    });
+                }
+
+                if (!this.foundMatches.has(normalizedKey)) {
+                    this.foundMatches.set(normalizedKey, []);
+                }
+                this.foundMatches.get(normalizedKey).push(...rectsForThisMatch);
+            }
+            
+            processMatch(match, fullPageString, itemMappings, viewport, pageNum) {
+                const matchText = match[0].trim();
+                if (!matchText) return;
+
+                const normalizedKey = matchText.replace(/\s+/g, ' ').trim();
+                const matchStart = match.index;
+                const matchEnd = match.index + matchText.length;
+
+                const overlappingFragments = itemMappings.filter(m => 
+                    (m.endIdx > matchStart && m.startIdx < matchEnd)
+                );
+
+                let rectsForThisMatch = [];
+
+                for (const fragment of overlappingFragments) {
+                    const item = fragment.item;
+                    
+                    const tx = item.transform[4];
+                    const ty = item.transform[5];
+                    const itemHeight = Math.abs(item.transform[3]) || item.height || 12;
+                    const itemWidth = item.width || (item.str.length * itemHeight * 0.5);
+
+                    const [canvasX, canvasY] = viewport.convertToViewportPoint(tx, ty);
+                    
+                    const rectWidth = itemWidth * this.pdfScale;
+                    const rectHeight = itemHeight * this.pdfScale; 
+                    
+                    rectsForThisMatch.push({
+                        pageNum: pageNum,
+                        rect: {
+                            x: canvasX - 2, 
+                            y: canvasY - (rectHeight * 0.85), 
+                            w: rectWidth + 4, 
+                            h: rectHeight * 1.2
+                        }
+                    });
+                }
+
+                if (!this.foundMatches.has(normalizedKey)) {
+                    this.foundMatches.set(normalizedKey, []);
+                }
+                this.foundMatches.get(normalizedKey).push(...rectsForThisMatch);
+            }
+
+            async scanNonPDF() {
+                const file = this.currentFile;
+                const name = file.name.toLowerCase();
+                let fullText = "";
+
+                if (name.endsWith('.txt') || name.endsWith('.csv') || name.endsWith('.json')) {
+                    fullText = await file.text();
+                } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                    workbook.SheetNames.forEach(sheetName => {
+                        const sheet = workbook.Sheets[sheetName];
+                        for (let cellAddress in sheet) {
+                            if (cellAddress[0] === '!') continue; 
+                            let cell = sheet[cellAddress];
+                            if (cell.v !== undefined && cell.v !== null) fullText += String(cell.v) + " ";
+                        }
+                    });
+                } else if (name.endsWith('.docx')) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const zip = await JSZip.loadAsync(arrayBuffer);
+                    const docxPartNames = Object.keys(zip.files).filter(n =>
+                        /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/i.test(n)
+                    );
+                    for (const partName of docxPartNames) {
+                        fullText += "\n" + await zip.file(partName).async("string");
+                    }
+                }
+
+                const masterRegex = new RegExp(REDACT_REGEX_SOURCE, 'gi');
+                const headerFooterPatterns = [
+                    letterHeadRegex1, letterHeadRegex2, letterHeadRegex3, letterHeadRegex4, letterHeadRegex5,
+                    letterHeadRegex6, letterHeadRegex7, letterHeadRegex8, letterHeadRegex9, letterHeadRegex10, letterHeadRegex11,
+                    footerRegex1, footerRegex2, footerRegex3
+                ];
+                let match;
+                while ((match = masterRegex.exec(fullText)) !== null) {
+                    const matchText = match[0].trim();
+                    if (!matchText) continue;
+                    const normalizedKey = matchText.replace(/\s+/g, ' ').trim();
+                    
+                    if (!this.foundMatches.has(normalizedKey)) {
+                        this.foundMatches.set(normalizedKey, []); 
+                    }
+                }
+                headerFooterPatterns.forEach(pattern => {
+                    pattern.lastIndex = 0;
+                    while ((match = pattern.exec(fullText)) !== null) {
+                        const matchText = match[0].trim();
+                        if (!matchText) return;
+                        const normalizedKey = matchText.replace(/\s+/g, ' ').trim();
+                        if (!this.foundMatches.has(normalizedKey)) {
+                            this.foundMatches.set(normalizedKey, []);
+                        }
+                    }
+                });
+            }
+
+            renderSidebarItems() {
+                const container = document.getElementById('detectedItemsContainer');
+                const empty = document.getElementById('emptySidebar');
+                const badge = document.getElementById('badgeCount');
+                const applyContainer = document.getElementById('applyContainer');
+                
+                container.innerHTML = '';
+                
+                if (this.foundMatches.size === 0) {
+                    container.classList.add('hidden');
+                    applyContainer.classList.add('hidden');
+                    empty.classList.remove('hidden');
+                    badge.textContent = '0';
+                    return;
+                }
+
+                empty.classList.add('hidden');
+                container.classList.remove('hidden');
+                applyContainer.classList.remove('hidden');
+                badge.textContent = this.foundMatches.size;
+
+                this.matchKeysArray = Array.from(this.foundMatches.keys()).sort();
+
+                this.matchKeysArray.forEach((itemKey, index) => {
+                    const count = this.foundMatches.get(itemKey).length;
+                    const countBadge = this.currentFileType === 'pdf' ? `<span class="text-xs bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded-md ml-1">${count} found</span>` : '';
+
+                    const displayKey = itemKey.length > 60 ? itemKey.substring(0, 60) + "..." : itemKey;
+
+                    const li = document.createElement('li');
+                    li.className = "flex items-start gap-3 bg-white border border-gray-200 rounded-lg p-3 text-gray-700 shadow-sm transition-all hover:border-indigo-300";
+                    li.id = `match-item-${index}`;
+                    
+                    li.innerHTML = `
+                        <input type="checkbox" class="match-checkbox mt-1 w-4 h-4 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer" data-index="${index}" checked>
+                        <div class="flex-grow break-words text-sm font-medium" title="${this.escapeHtml(itemKey)}">
+                            ${this.escapeHtml(displayKey)} ${countBadge}
+                        </div>
+                        <button class="remove-match-btn text-gray-400 hover:text-red-500 p-1" title="Remove from list">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                        </button>
+                    `;
+
+                    li.querySelector('.remove-match-btn').addEventListener('click', (e) => {
+                        e.preventDefault();
+                        const checkbox = li.querySelector('.match-checkbox');
+                        checkbox.checked = false;
+                        li.style.opacity = '0.5';
+                        li.classList.add('bg-gray-100');
+                    });
+
+                    container.appendChild(li);
+                });
+            }
+
+            async autoRedactAll() {
+                if (!this.currentFile) return;
+
+                await this.scanDocument();
+
+                if (this.foundMatches.size === 0) {
+                    this.setStatus('Auto-Redact complete. No sensitive data was found.');
+                    return;
+                }
+
+                document.querySelectorAll('.match-checkbox').forEach(cb => cb.checked = true);
+                document.querySelectorAll('#sidebarList li').forEach(li => {
+                    li.style.opacity = '';
+                    li.classList.remove('bg-gray-100');
+                });
+
+                await this.applyReviewedRedactions();
+                this.setStatus(`Auto-Redact complete. ${this.foundMatches.size} unique item(s) redacted across the document. Click "Download Clean File" to save.`);
+            }
+
+            async applyReviewedRedactions() {
+                const checkboxes = document.querySelectorAll('.match-checkbox:checked');
+                
+                const termsToRedact = Array.from(checkboxes).map(cb => {
+                    const idx = parseInt(cb.getAttribute('data-index'), 10);
+                    return this.matchKeysArray[idx];
+                });
+
+                if (termsToRedact.length === 0) {
+                    this.setStatus("No items selected to redact.", true);
+                    return;
+                }
+
+                this.showLoading('Applying permanent redactions...', true);
+
+                try {
+                    if (this.currentFileType === 'pdf') {
+                        let blocksAdded = 0;
+                        const redactColor = document.getElementById('colorPicker').value;
+
+                        termsToRedact.forEach(term => {
+                            const locations = this.foundMatches.get(term) || [];
+                            locations.forEach(loc => {
+                                this.redactions[loc.pageNum - 1].push({
+                                    type: 'rect',
+                                    color: redactColor,
+                                    data: loc.rect
+                                });
+                                blocksAdded++;
+                            });
+                        });
+                        
+                        await this.renderPage(this.currentPage);
+                        this.setStatus(`Successfully applied ${blocksAdded} redaction blocks based on your review.`);
+                        
+                    } else {
+                        await this.applyNonPDF(termsToRedact);
+                        this.setStatus(`Successfully cleansed document based on your review. Ready to download.`);
+                    }
+
+                    document.getElementById('applyContainer').innerHTML = `
+                        <div class="text-sm text-green-700 bg-green-50 p-2 rounded text-center border border-green-200 font-semibold shadow-inner">
+                            ✅ Redactions Applied
+                        </div>
+                    `;
+                    document.getElementById('downloadBtn').disabled = false;
+                    this.updateUndoState();
+
+                } catch (error) {
+                    this.setStatus('Error applying redactions: ' + error.message, true);
+                    console.error(error);
+                } finally {
+                    this.showLoading('', false);
+                }
+            }
+
+            async applyNonPDF(approvedTerms) {
+                const escapedTerms = approvedTerms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                                                  .sort((a, b) => b.length - a.length);
+                
+                const customRegex = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
+                const file = this.currentFile;
+                const name = file.name.toLowerCase();
+
+                if (name.endsWith('.txt') || name.endsWith('.csv') || name.endsWith('.json')) {
+                    const text = await file.text();
+                    const redactedText = text.replace(customRegex, REDACT_REPLACEMENT_TEXT);
+                    this.processedBlob = new Blob([redactedText], { type: 'text/plain' });
+
+                } else if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+
+                    workbook.SheetNames.forEach(sheetName => {
+                        const sheet = workbook.Sheets[sheetName];
+                        for (let cellAddress in sheet) {
+                            if (cellAddress[0] === '!') continue; 
+                            let cell = sheet[cellAddress];
+                            if (cell.v !== undefined && cell.v !== null) {
+                                const original = String(cell.v);
+                                const redacted = original.replace(customRegex, REDACT_REPLACEMENT_TEXT);
+                                if (original !== redacted) {
+                                    cell.v = redacted;
+                                    cell.t = 's';
+                                }
+                            }
+                        }
+                    });
+                    const wbout = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+                    this.processedBlob = new Blob([wbout], { type: 'application/octet-stream' });
+
+                } else if (name.endsWith('.docx')) {
+                    const arrayBuffer = await file.arrayBuffer();
+                    const zip = await JSZip.loadAsync(arrayBuffer);
+                    const docxPartNames = Object.keys(zip.files).filter(n =>
+                        /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/i.test(n)
+                    );
+                    for (const partName of docxPartNames) {
+                        let xmlContent = await zip.file(partName).async("string");
+                        xmlContent = xmlContent.replace(customRegex, REDACT_REPLACEMENT_TEXT);
+                        zip.file(partName, xmlContent);
+                    }
+                    this.processedBlob = await zip.generateAsync({ type: "blob" });
+                }
+            }
+
+            async downloadDocument() {
+                if (this.currentFileType === 'pdf') {
+                    await this.downloadRedactedPDF();
+                } else if (this.processedBlob) {
+                    this.triggerFileDownload(this.processedBlob, `redacted_secure_${this.currentFile.name}`);
+                }
+            }
+
+            triggerFileDownload(blob, filename) {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            }
+
+            async downloadRedactedPDF() {
+                if (!this.pdfDoc) return;
+                this.showLoading('Generating Secure PDF...', true);
+                
+                try {
+                    const { jsPDF } = window.jspdf;
+                    const pdf = new jsPDF();
+                    pdf.deletePage(1); 
+                    
+                    const originalPage = this.currentPage;
+                    
+                    for (let i = 1; i <= this.totalPages; i++) {
+                        await this.renderPage(i);
+                        const imgData = this.canvas.toDataURL('image/jpeg', 1.0); 
+                        
+                        const pageDetails = await this.pdfDoc.getPage(i);
+                        const viewport = pageDetails.getViewport({ scale: 1 });
+                        const orientation = viewport.width > viewport.height ? 'l' : 'p';
+                        
+                        pdf.addPage([viewport.width, viewport.height], orientation);
+                        pdf.addImage(imgData, 'JPEG', 0, 0, viewport.width, viewport.height);
+                    }
+                    
+                    await this.renderPage(originalPage);
+                    pdf.save(`redacted_secure_${new Date().getTime()}.pdf`);
+                    this.setStatus('PDF generated and downloaded successfully!');
+                    
+                } catch (error) {
+                    this.setStatus('Error generating PDF: ' + error.message, true);
+                } finally {
+                    this.showLoading('', false);
+                }
+            }
+
+            undoRedaction() {
+                if (this.currentFileType !== 'pdf') return;
+                const currentRedactions = this.redactions[this.currentPage - 1];
+                if (currentRedactions && currentRedactions.length > 0) {
+                    currentRedactions.pop(); 
+                    this.renderPage(this.currentPage);
+                }
+            }
+
+            clearRedactions() {
+                if (this.currentFileType !== 'pdf') return;
+                this.redactions[this.currentPage - 1] = [];
+                this.renderPage(this.currentPage);
+            }
+
+            clearSidebar() {
+                document.getElementById('detectedItemsContainer').innerHTML = '';
+                document.getElementById('detectedItemsContainer').classList.add('hidden');
+                document.getElementById('applyContainer').classList.add('hidden');
+                document.getElementById('emptySidebar').classList.remove('hidden');
+                document.getElementById('badgeCount').textContent = '0';
+                
+                this.matchKeysArray = [];
+
+                document.getElementById('applyContainer').innerHTML = `
+                    <p class="text-xs text-gray-500 mb-3 text-center">Uncheck items you want to keep visible.</p>
+                    <button id="applyAutoBtn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-lg shadow-md transition-all flex items-center justify-center gap-2">
+                        ✅ Apply Selected Redactions
+                    </button>
+                `;
+                document.getElementById('applyAutoBtn').addEventListener('click', () => this.applyReviewedRedactions());
+            }
+
+            updateUndoState() {
+                const hasRedactions = this.redactions[this.currentPage - 1]?.length > 0;
+                document.getElementById('undoBtn').disabled = !hasRedactions;
+                document.getElementById('clearBtn').disabled = !hasRedactions;
+            }
+
+            enableButtons(scanEnabled, downloadEnabled) {
+                document.getElementById('scanBtn').disabled = !scanEnabled;
+                document.getElementById('autoRedactBtn').disabled = !scanEnabled;
+                document.getElementById('downloadBtn').disabled = !downloadEnabled;
+            }
+
+            showLoading(text, show) {
+                const loader = document.getElementById('loading');
+                if (show) {
+                    document.getElementById('loadingText').textContent = text;
+                    loader.classList.remove('hidden');
+                } else {
+                    loader.classList.add('hidden');
+                }
+            }
+
+            setStatus(msg, isError = false) {
+                const alert = document.getElementById('statusAlert');
+                alert.textContent = msg;
+                alert.classList.remove('hidden', 'bg-blue-50', 'text-blue-800', 'border-blue-100', 'bg-red-50', 'text-red-800', 'border-red-100');
+                
+                if (isError) {
+                    alert.classList.add('bg-red-50', 'text-red-800', 'border-red-100');
+                } else {
+                    alert.classList.add('bg-blue-50', 'text-blue-800', 'border-blue-100');
+                }
+                
+                setTimeout(() => alert.classList.add('hidden'), 5000);
+            }
+
+            escapeHtml(unsafe) {
+                return unsafe
+                     .replace(/&/g, "&amp;")
+                     .replace(/</g, "&lt;")
+                     .replace(/>/g, "&gt;")
+                     .replace(/"/g, "&quot;")
+                     .replace(/'/g, "&#039;");
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Trigger the PWA Setup
+            initPWA();
+            
+            const app = new DocumentRedactor();
+
+            // Resize observer to re-render PDF canvas gracefully if window resizes
+            window.addEventListener('resize', () => {
+                if (app.pdfDoc && app.currentFileType === 'pdf') {
+                    app.renderPage(app.currentPage);
+                }
+            });
+
+            if (typeof Tesseract === 'undefined') {
+                document.getElementById('ocrToggle').checked = false;
+                document.getElementById('ocrToggle').disabled = true;
+                app.ocrEnabled = false;
+                app.setStatus('OCR engine failed to load (network/CDN may be blocked). Scanned/photocopied PDF pages will need manual brush redaction.', true);
+            }
+
+            window.addEventListener('beforeunload', () => {
+                if (app.ocrWorker) app.ocrWorker.terminate();
+            });
+        });
     </script>
 </body>
 </html>
